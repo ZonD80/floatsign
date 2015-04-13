@@ -17,6 +17,8 @@ This script appears to have originated from [Float Mobile Learning](http://www.f
 
 We are posting our tweaked version of [this Gist](https://gist.github.com/Weptun/5406993) in this repository. Our initial changes were to add support for re-signing embedded iOS 8 frameworks, as well as incorporating a change to update the <key>com.apple.developer.team-identifier</key> in the entitlements as suggested in the comments of the referenced gist. 
 
+Updating to sign iOS apps with extensions [ZonD80](https://github.com/ZonD80). Now licensed as GPLv3/MIT.
+
 Issues and pull requests with changes/fixes are welcomed.
 
 
@@ -28,3 +30,8 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+## GPLv3 License
+
+See LICENCE file in root folder

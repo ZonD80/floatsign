@@ -1,5 +1,4 @@
-# !/bin/bash
-
+#!/usr/bin/env bash
 # Copyright (c) 2011 Float Mobile Learning
 # http://www.floatlearning.com/
 # Extension Copyright (c) 2013 Weptun Gmbh
@@ -11,6 +10,9 @@
 #
 # Extended by John Turnipseed and Matthew Nespor, November 2014
 # http://nanonation.net/
+#
+# Extended by ZonD80, April 2015
+# https://github.com/ZonD80
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the "Software"),
@@ -50,20 +52,27 @@
 # 4. renamed 'temp' directory and made it a variable so it can be easily modified
 # 5. various code formatting and logging adjustments
 # 
-
-
+# new features April 2015
+# 1. Resigining iOS 8+ app extensions with -x argument during signing of main binary
+# 2. Using ditto for packaging and extracting - it's native and correctly handles symlinks
+# 3. More random names for temp directories
+# 4. Removing entitilements for wildcard profiles
+# 5. Some love
+#
+#set -o xtrace
 function checkStatus {
 
 if [ $? -ne 0 ];
 then
 	echo "Encountered an error, aborting!" >&2
+#	rm -rf "${TEMP_DIR}"
 	exit 1
 fi
 }
 
 if [ $# -lt 3 ]; then
-	echo "usage: $0 source identity -p provisioning [-e entitlements] [-r adjustBetaReports] [-d displayName] [-n version] -b bundleId outputIpa" >&2
-	echo "       -p and -b are optional, but their use is heavly recommended" >&2
+	echo "usage: $0 source identity -k keychain [-p provisioning] [-e entitlements] [-r adjustBetaReports] [-d displayName] [-n version] [-b bundleId] [-x appexPath] outputIpa" >&2
+	echo "       -p, -e are optional, but their use is heavly recommended" >&2
 	echo "       -r flag requires a value '-r yes'"
 	echo "       -r flag is ignored if -e is also used" >&2
 	exit 1
@@ -80,11 +89,12 @@ TEAM_IDENTIFIER=""
 KEYCHAIN=""
 VERSION_NUMBER=""
 ADJUST_BETA_REPORTS_ACTIVE_FLAG="0"
-TEMP_DIR="_floatsignTemp"
-
+TEMP_DIR="$(mktemp -d /tmp/resign.$(basename "$ORIGINAL_FILE").XXXXX)"
+APP_EX="0"
+BUNDLE_TO=""
 # options start index
 OPTIND=3
-while getopts p:d:e:k:b:r:n: opt; do
+while getopts p:d:e:k:b:r:n:x: opt; do
 	case $opt in
 		p)
 			NEW_PROVISION="$OPTARG"
@@ -114,6 +124,12 @@ while getopts p:d:e:k:b:r:n: opt; do
 			ADJUST_BETA_REPORTS_ACTIVE_FLAG="1"
 			echo "Enabled adjustment of beta-reports-active entitlements" >&2
 			;;
+		x)
+                        APP_EX="1"
+			BUNDLE_TO="$OPTARG"
+                        echo "Signing app extension" >&2
+                        ;;
+
 		\?)
 			echo "Invalid option: -$OPTARG" >&2
 			exit 1
@@ -127,6 +143,8 @@ done
 
 shift $((OPTIND-1))
 
+if [ "$APP_EX" = "0" ];
+then
 NEW_FILE="$1"
 if [ -z "$NEW_FILE" ]; 
 then
@@ -134,13 +152,15 @@ then
 	exit 1
 fi
 
+fi
 
 # Check for and remove the temporary directory if it already exists
-if [ -d "$TEMP_DIR" ]; 
+if [ -d "$TEMP_DIR" ];
 then
-	echo "Removing previous temporary directory: '$TEMP_DIR'" >&2
-	rm -Rf "$TEMP_DIR"
+        echo "Removing previous temporary directory: '$TEMP_DIR'" >&2
+        rm -Rf "$TEMP_DIR"
 fi
+
 
 filename=$(basename "$ORIGINAL_FILE")
 extension="${filename##*.}"
@@ -150,7 +170,9 @@ filename="${filename%.*}"
 if [ "${extension}" = "ipa" ]
 then
 	# Unzip the old ipa quietly
-	unzip -q "$ORIGINAL_FILE" -d $TEMP_DIR
+	#unzip -q "$ORIGINAL_FILE" -d $TEMP_DIR
+	ditto -x -k "$ORIGINAL_FILE" "$TEMP_DIR"
+
 	checkStatus
 elif [ "${extension}" = "app" ]
 then
@@ -158,8 +180,17 @@ then
 	mkdir -p "$TEMP_DIR/Payload"
 	cp -Rf "${ORIGINAL_FILE}" "$TEMP_DIR/Payload/${filename}.app"
 	checkStatus
+
+elif [ "${extension}" = "appex" ]
+then
+        # Copy the app file into an ipa-like structure
+        mkdir -p "$TEMP_DIR/Payload"
+        cp -Rf "${ORIGINAL_FILE}" "$TEMP_DIR/Payload/${filename}.app"
+        checkStatus
+
+
 else
-	echo "Error: Only can resign .app files and .ipa files." >&2
+	echo "Error: Only can resign .app files and .ipa, .appex files." >&2
 	exit
 fi
 
@@ -167,8 +198,11 @@ fi
 if [ "${KEYCHAIN}" != "" ];
 then
 	security list-keychains -s $KEYCHAIN
-	security unlock $KEYCHAIN
+#	security unlock $KEYCHAIN
 	security default-keychain -s $KEYCHAIN
+else
+echo "-k KEYCHAIN is mandatory!" >&2
+exit
 fi
 
 # Set the app name
@@ -217,7 +251,7 @@ then
 	if [[ -e "$NEW_PROVISION" ]];
 	then
 		echo "Validating the new provisioning profile: $NEW_PROVISION" >&2
-		security cms -D -i "$NEW_PROVISION" > "$TEMP_DIR/profile.plist"
+		security cms -k "${KEYCHAIN}" -D -i "$NEW_PROVISION" > "$TEMP_DIR/profile.plist"
 		checkStatus
 
 		APP_IDENTIFER_PREFIX=`PlistBuddy -c "Print :Entitlements:application-identifier" "$TEMP_DIR/profile.plist" | grep -E '^[A-Z0-9]*' -o | tr -d '\n'` 
@@ -280,28 +314,8 @@ then
 	fi
 fi
 
-# Check for and resign any embedded frameworks (new feature for iOS 8 and above apps)
-FRAMEWORKS_DIR="$TEMP_DIR/Payload/$APP_NAME/Frameworks"
-if [ -d "$FRAMEWORKS_DIR" ];
-then
-	if [ "$TEAM_IDENTIFIER" == "" ];
-	then
-		echo "ERROR: embedded frameworks detected, re-signing iOS 8 (or higher) applications wihout a team identifier in the certificate/profile does not work" >&2
-		exit 1;
-	fi
-	
-	echo "Resigning embedded frameworks using certificate: '$CERTIFICATE'" >&2
-	for framework in "$FRAMEWORKS_DIR"/*
-	do
-		if [[ "$framework" == *.framework ]]
-		then
-			/usr/bin/codesign -f -s "$CERTIFICATE" "$framework"
-			checkStatus
-		else
-			echo "Ignoring non-framework: $framework" >&2
-		fi
-	done
-fi
+
+export CODESIGN_ALLOCATE=`xcodebuild -find codesign_allocate`
 
 
 # Resign the application
@@ -339,7 +353,7 @@ then
 
 	echo "Resigning application using certificate: '$CERTIFICATE'" >&2
 	echo "and entitlements: $ENTITLEMENTS" >&2
-	/usr/bin/codesign -f -s "$CERTIFICATE" --entitlements="$ENTITLEMENTS" "$TEMP_DIR/Payload/$APP_NAME"
+	/usr/bin/codesign -f --keychain "${KEYCHAIN}" -s "$CERTIFICATE" --entitlements="$ENTITLEMENTS" "$TEMP_DIR/Payload/$APP_NAME"
 	checkStatus
 else
 	echo "Extracting existing entitlements for updating" >&2
@@ -354,11 +368,13 @@ else
 				if [ "$TEAM_IDENTIFIER" != "" ];
 				then
 					PlistBuddy -c "Set :com.apple.developer.team-identifier ${TEAM_IDENTIFIER}" "$TEMP_DIR/newEntitlements"
-					checkStatus
+					#checkStatus
 				fi
 				PlistBuddy -c "Set :application-identifier ${APP_IDENTIFER_PREFIX}.${BUNDLE_IDENTIFIER}" "$TEMP_DIR/newEntitlements"
 				checkStatus
-				PlistBuddy -c "Set :keychain-access-groups:0 ${APP_IDENTIFER_PREFIX}.${BUNDLE_IDENTIFIER}" "$TEMP_DIR/newEntitlements"
+				PlistBuddy -c "Delete :keychain-access-groups" "$TEMP_DIR/newEntitlements"
+				PlistBuddy -c "Add :keychain-access-groups array" "$TEMP_DIR/newEntitlements"	
+				PlistBuddy -c "Add :keychain-access-groups:0 string ${APP_IDENTIFER_PREFIX}.${BUNDLE_IDENTIFIER}" "$TEMP_DIR/newEntitlements"
 #				checkStatus  -- if this fails it's likely because the keychain-access-groups key does not exist, so we have nothing to update
 				if [[ "$CERTIFICATE" == *Distribution* ]]; then
 					echo "Assuming Distribution Identity"
@@ -381,10 +397,24 @@ else
 						PlistBuddy -c "Delete :beta-reports-active" "$TEMP_DIR/newEntitlements"
 						# do not check status here, just let it fail if entry does not exist
 					fi
-					echo "Setting get-task-allow entitlement to YES"
-					PlistBuddy -c "Set :get-task-allow YES" "$TEMP_DIR/newEntitlements"
+					echo "Deleting non-wildcard entitilements"
+					PlistBuddy -c "Delete :aps-environment" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Delete :get-task-allow" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Delete :com.apple.security.application-groups" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Delete :com.apple.developer.associated-domains" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Delete :com.apple.developer.icloud-container-environment" "$TEMP_DIR/newEntitlements"
+				#	PlistBuddy -c "Add :beta-reports-active bool true" "$TEMP_DIR/newEntitlements"
+					#PlistBuddy -c "Delete :com.apple.developer.icloud-container-environment" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Set :com.apple.developer.default-data-protection NSFileProtectionComplete" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Set :com.apple.developer.ubiquity-kvstore-identifier ${APP_IDENTIFER_PREFIX}.${BUNDLE_IDENTIFIER}" "$TEMP_DIR/newEntitlements"
+					PlistBuddy -c "Delete :com.apple.developer.ubiquity-container-identifiers" "$TEMP_DIR/newEntitlements"
+                                	PlistBuddy -c "Add :com.apple.developer.ubiquity-container-identifiers array" "$TEMP_DIR/newEntitlements"
+
+					PlistBuddy -c "Add :com.apple.developer.ubiquity-container-identifiers:0 string ${APP_IDENTIFER_PREFIX}.${BUNDLE_IDENTIFIER}" "$TEMP_DIR/newEntitlements"
+					#echo "Setting get-task-allow entitlement to YES"
+					#PlistBuddy -c "Set :get-task-allow YES" "$TEMP_DIR/newEntitlements"
 				fi
-				checkStatus
+				#checkStatus
 				plutil -lint "$TEMP_DIR/newEntitlements" > /dev/null
 				checkStatus
 				echo "Resigning application using certificate: '$CERTIFICATE'" >&2
@@ -393,7 +423,17 @@ else
 				then
 					echo "and team identifier: '$TEAM_IDENTIFIER'" >&2
 				fi
-				/usr/bin/codesign -f -s "$CERTIFICATE" --entitlements="$TEMP_DIR/newEntitlements" "$TEMP_DIR/Payload/$APP_NAME"
+
+				if [ "$APP_EX" = "0" ];
+				then
+				/usr/bin/codesign --keychain "${KEYCHAIN}" -f -s "$CERTIFICATE" --entitlements="$TEMP_DIR/newEntitlements" "$TEMP_DIR/Payload/$APP_NAME"
+				else
+echo "Moving appex back and signing"
+rm -Rf "$ORIGINAL_FILE"
+cp -Rf "$TEMP_DIR/Payload/$APP_NAME" "$ORIGINAL_FILE"
+
+				/usr/bin/codesign --keychain "${KEYCHAIN}" -f -s "$CERTIFICATE" --entitlements="$TEMP_DIR/newEntitlements" "$ORIGINAL_FILE" "$BUNDLE_TO"
+				fi
 				checkStatus
 			else
 				echo "Failed to create required intermediate file" >&2
@@ -403,35 +443,72 @@ else
 			echo "No entitlements found" >&2
 			echo "Resigning application using certificate: '$CERTIFICATE'" >&2
 			echo "without entitlements" >&2
-			/usr/bin/codesign -f -s "$CERTIFICATE" "$TEMP_DIR/Payload/$APP_NAME"
+			/usr/bin/codesign --keychain "${KEYCHAIN}" -f -s "$CERTIFICATE" "$TEMP_DIR/Payload/$APP_NAME"
 			checkStatus
 		fi
 	else
 		echo "Failed to extract entitlements" >&2
 		echo "Resigning application using certificate: '$CERTIFICATE'" >&2
 		echo "without entitlements" >&2
-		/usr/bin/codesign -f -s "$CERTIFICATE" "$TEMP_DIR/Payload/$APP_NAME"
+		/usr/bin/codesign --keychain "${KEYCHAIN}" -f -s "$CERTIFICATE" "$TEMP_DIR/Payload/$APP_NAME"
 		checkStatus
 	fi
 fi
+
+# Check for and resign any embedded frameworks (new feature for iOS 8 and above apps)
+FRAMEWORKS_DIR="$TEMP_DIR/Payload/$APP_NAME/Frameworks"
+if [ -d "$FRAMEWORKS_DIR" ];
+then
+        if [ "$TEAM_IDENTIFIER" == "" ];
+        then
+                echo "ERROR: embedded frameworks detected, re-signing iOS 8 (or higher) applications wihout a team identifier in the certificate/profile does not work" >&2
+                exit 1;
+        fi
+
+        echo "Resigning embedded frameworks using certificate: '$CERTIFICATE'" >&2
+        for framework in "$FRAMEWORKS_DIR"/*
+        do
+                if [[ "$framework" == *.framework ]]
+                then
+                        /usr/bin/codesign -f --keychain "${KEYCHAIN}" --entitlements="$TEMP_DIR/newEntitlements" -s "$CERTIFICATE" "$framework"
+                        checkStatus
+                else
+                        echo "Ignoring non-framework: $framework" >&2
+                fi
+        done
+fi
+
+echo "signing extensions (self stage)"
+
+find "$TEMP_DIR/Payload/$APP_NAME" -name "*.appex" -exec "$0" {} "$CERTIFICATE" -p "$NEW_PROVISION" -k "$KEYCHAIN" -x "$TEMP_DIR/Payload/$APP_NAME" \;
+
+echo "signinng additional binaries" >&2
+LIST_BINARY_EXTENSIONS="dylib so 0 vis pvr"
+for binext in $LIST_BINARY_EXTENSIONS
+    do
+                find "$TEMP_DIR/Payload/$APP_NAME" -name "*.$binext" -exec codesign -f --keychain "$KEYCHAIN" --entitlements="$TEMP_DIR/newEntitlements" --deep -s "$CERTIFICATE" {} "$TEMP_DIR/Payload/$APP_NAME" \;
+         done
+
 
 # Remove the temporary files if they were created before generating ipa
 rm -f "$TEMP_DIR/newEntitlements"
 rm -f "$TEMP_DIR/profile.plist"
 
 # Repackage quietly
+if [ "$APP_EX" = "0" ];
+then
 echo "Repackaging as $NEW_FILE" >&2
+cd "$TEMP_DIR"
+mkdir "ditto"
+mv "Payload" "ditto/"
+ditto -c -k --sequesterRsrc "ditto" "$NEW_FILE"
+# Remove the temp directory
+#else
 
-# Zip up the contents of the "$TEMP_DIR" folder
-# Navigate to the temporary directory (sending the output to null)
-# Zip all the contents, saving the zip file in the above directory
-# Navigate back to the orignating directory (sending the output to null)
-pushd "$TEMP_DIR" > /dev/null
-zip -qr "../$TEMP_DIR.ipa" *
-popd > /dev/null
-
-# Move the resulting ipa to the target destination
-mv "$TEMP_DIR.ipa" "$NEW_FILE"
+#echo "Moving appex back"
+#rm -Rf "$ORIGINAL_FILE"
+#cp -Rf "$TEMP_DIR/Payload/$APP_NAME" "$ORIGINAL_FILE"
+fi
 
 # Remove the temp directory
 rm -rf "$TEMP_DIR"
